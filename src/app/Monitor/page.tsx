@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { Loader2, Droplets, Power, PowerOff, RefreshCw } from "lucide-react"
+import { Loader2, Droplets, Power, PowerOff, RefreshCw, AlertCircle } from "lucide-react"
 import * as tf from '@tensorflow/tfjs'
 
 // Plant disease classes
@@ -37,6 +37,21 @@ interface MotorStatus {
   motor_status: string;
 }
 
+// Mock data for when API is unavailable
+const MOCK_MOTOR_STATUS: MotorStatus = {
+  motor_on: false,
+  soil_dry: true,
+  soil_status: "Dry",
+  motor_status: "OFF"
+}
+
+// Mock images for demo purposes
+const MOCK_IMAGES = [
+  "https://imgur.com/Ytmm66M.png",
+  "https://imgur.com/dDChdK6.png",
+  "https://imgur.com/PKgMr57.png"
+]
+
 export default function PredictionPage() {
   const [cameraImages, setCameraImages] = useState<string[]>([])
   const [isLoadingImage, setIsLoadingImage] = useState<boolean>(false)
@@ -48,6 +63,7 @@ export default function PredictionPage() {
   const [needsIrrigation, setNeedsIrrigation] = useState<boolean>(false)
   const [model, setModel] = useState<tf.LayersModel | null>(null)
   const [modelLoaded, setModelLoaded] = useState<boolean>(false)
+  const [apiConnected, setApiConnected] = useState<boolean>(false)
   
   // Motor control states
   const [motorStatus, setMotorStatus] = useState<MotorStatus | null>(null)
@@ -59,12 +75,47 @@ export default function PredictionPage() {
     // You can implement actual toast here if needed
   }
 
-  // Load model from path - Replace this path with your model location
-  const MODEL_PATH = 'public/model/model.json' // Change this to your model path
+  // Updated MODEL_PATH - correct path for Next.js public folder
+  const MODEL_PATH = '/model/model.json' // Correct path for Next.js public folder
+
+  // Test API connectivity
+  const testApiConnection = async (): Promise<boolean> => {
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000) // 5 second timeout
+      
+      const response = await fetch('https://monitor-plant.loca.lt/motor/status', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          "bypass-tunnel-reminder": "true",
+        },
+        signal: controller.signal
+      })
+      
+      clearTimeout(timeoutId)
+      return response.ok
+    } catch (error) {
+      console.log("API not available, using demo mode")
+      return false
+    }
+  }
 
   // Load model on component mount
   useEffect(() => {
-    const loadModel = async () => {
+    const initializeApp = async () => {
+      // Test API connection first
+      const connected = await testApiConnection()
+      setApiConnected(connected)
+      
+      if (!connected) {
+        // Set mock data for demo mode
+        setMotorStatus(MOCK_MOTOR_STATUS)
+        setCameraImages(MOCK_IMAGES)
+        showToast("Demo Mode", "API not available - using demo data")
+      }
+
+      // Try to load model
       try {
         console.log("Loading model from:", MODEL_PATH)
         const loadedModel = await tf.loadLayersModel(MODEL_PATH)
@@ -74,32 +125,43 @@ export default function PredictionPage() {
         console.log("Model loaded:", loadedModel)
       } catch (error) {
         console.error("Error loading model:", error)
-        console.log("Model not found, will use API fallback")
-        // Don't show error toast, just use API fallback
+        console.log("Model not found, will use mock predictions or API fallback")
+      }
+      
+      // Load initial motor status if API is connected
+      if (connected) {
+        fetchMotorStatus()
+        // Set up interval to check motor status every 30 seconds
+        const statusInterval = setInterval(fetchMotorStatus, 30000)
+        return () => clearInterval(statusInterval)
       }
     }
 
-    loadModel()
-    // Load initial motor status
-    fetchMotorStatus()
-    
-    // Set up interval to check motor status every 30 seconds
-    const statusInterval = setInterval(fetchMotorStatus, 30000)
-    
-    return () => clearInterval(statusInterval)
+    initializeApp()
   }, [])
 
-  // Fetch motor status
+  // Fetch motor status with error handling
   const fetchMotorStatus = async () => {
+    if (!apiConnected) {
+      setMotorStatus(MOCK_MOTOR_STATUS)
+      return
+    }
+
     setIsLoadingStatus(true)
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 10000)
+      
       const response = await fetch('https://monitor-plant.loca.lt/motor/status', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
           "bypass-tunnel-reminder": "true",
         },
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
       
       if (!response.ok) {
         throw new Error('Failed to fetch motor status')
@@ -109,23 +171,36 @@ export default function PredictionPage() {
       setMotorStatus(status)
     } catch (error) {
       console.error("Failed to fetch motor status:", error)
-      showToast("Error", "Failed to fetch motor status", "destructive")
+      setApiConnected(false)
+      setMotorStatus(MOCK_MOTOR_STATUS)
+      showToast("Connection Lost", "Using demo data - check Raspberry Pi connection", "destructive")
     } finally {
       setIsLoadingStatus(false)
     }
   }
 
-  // Control motor (turn on/off)
+  // Control motor with error handling
   const controlMotor = async (action: 'on' | 'off') => {
+    if (!apiConnected) {
+      showToast("Demo Mode", "Motor control not available in demo mode", "destructive")
+      return
+    }
+
     setIsControllingMotor(true)
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
+      
       const response = await fetch(`https://monitor-plant.loca.lt/motor/${action}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           "bypass-tunnel-reminder": "true",
         },
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
       
       if (!response.ok) {
         throw new Error(`Failed to turn motor ${action}`)
@@ -138,7 +213,8 @@ export default function PredictionPage() {
       await fetchMotorStatus()
     } catch (error) {
       console.error(`Failed to turn motor ${action}:`, error)
-      showToast("Error", `Failed to turn motor ${action}`, "destructive")
+      setApiConnected(false)
+      showToast("Error", `Failed to turn motor ${action} - connection lost`, "destructive")
     } finally {
       setIsControllingMotor(false)
     }
@@ -146,11 +222,10 @@ export default function PredictionPage() {
 
   // Preprocess image for model prediction
   const preprocessImage = (imageElement: HTMLImageElement): tf.Tensor => {
-    // Convert image to tensor and resize to model input size (typically 224x224 for most models)
     const tensor = tf.browser.fromPixels(imageElement)
-      .resizeBilinear([224, 224]) // Adjust size based on your model's input requirements
-      .expandDims(0) // Add batch dimension
-      .div(255.0) // Normalize to [0, 1] - adjust based on your model's training
+      .resizeBilinear([224, 224])
+      .expandDims(0)
+      .div(255.0)
     
     return tensor
   }
@@ -161,7 +236,11 @@ export default function PredictionPage() {
     setSelectedImage("")
     setPrediction(null)
     setAdvice(null)
-    setCameraImages([])
+    
+    // Load demo images if API not connected
+    if (!apiConnected && cameraImages.length === 0) {
+      setCameraImages(MOCK_IMAGES)
+    }
   }
 
   const fetchCameraImage = async () => {
@@ -171,14 +250,38 @@ export default function PredictionPage() {
     }
 
     setIsLoadingImage(true)
+    
+    if (!apiConnected) {
+      // Simulate loading delay for demo
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      
+      // Add a new mock image
+      const newMockImage = `data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgZmlsbD0iIzIyNTQzZCIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBkb21pbmFudC1iYXNlbGluZT0ibWlkZGxlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmaWxsPSJ3aGl0ZSIgZm9udC1zaXplPSIxMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiPk5ldyBTYW1wbGUgJHtEYXRlLm5vdygpfTwvdGV4dD48L3N2Zz4=`
+      
+      setCameraImages(prev => {
+        const newImages = [...prev, newMockImage]
+        return newImages.slice(-3)
+      })
+      
+      showToast("Demo Mode", "Mock camera image captured")
+      setIsLoadingImage(false)
+      return
+    }
+
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000)
+      
       const response = await fetch('https://monitor-plant.loca.lt/image', {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
           "bypass-tunnel-reminder": "true",
         },
+        signal: controller.signal
       })
+      
+      clearTimeout(timeoutId)
       
       if (!response.ok) {
         throw new Error('Failed to fetch image')
@@ -198,7 +301,16 @@ export default function PredictionPage() {
       
       showToast("Success", "New camera image captured")
     } catch (error) {
-      showToast("Error", "Failed to fetch camera image", "destructive")
+      console.error("Failed to fetch camera image:", error)
+      setApiConnected(false)
+      showToast("Error", "Failed to fetch camera image - using demo mode", "destructive")
+      
+      // Fallback to mock image
+      const mockImage = MOCK_IMAGES[Math.floor(Math.random() * MOCK_IMAGES.length)]
+      setCameraImages(prev => {
+        const newImages = [...prev, mockImage]
+        return newImages.slice(-3)
+      })
     } finally {
       setIsLoadingImage(false)
     }
@@ -209,6 +321,17 @@ export default function PredictionPage() {
     setSelectedImage(image)
     setPrediction(null)
     setAdvice(null)
+  }
+
+  // Mock prediction for demo purposes
+  const getMockPrediction = (): string => {
+    const mockPredictions = [
+      "Tomato_healthy",
+      "Tomato_Early_blight",
+      "Tomato_Bacterial_spot",
+      "Tomato_Spider_mites_Two_spotted_spider_mite"
+    ]
+    return mockPredictions[Math.floor(Math.random() * mockPredictions.length)]
   }
 
   // Predict with local model
@@ -223,18 +346,13 @@ export default function PredictionPage() {
       
       img.onload = async () => {
         try {
-          // Preprocess the image
           const preprocessed = preprocessImage(img)
-          
-          // Make prediction
           const prediction = model.predict(preprocessed) as tf.Tensor
           const predictions = await prediction.data()
           
-          // Get the class with highest probability
           const maxIndex = predictions.indexOf(Math.max(...Array.from(predictions)))
           const predictedClass = CLASSES[maxIndex]
           
-          // Clean up tensors
           preprocessed.dispose()
           prediction.dispose()
           
@@ -249,7 +367,7 @@ export default function PredictionPage() {
     })
   }
 
-  // Predict plant health (with fallback to API)
+  // Predict plant health with comprehensive error handling
   const predictPlantHealth = async () => {
     if (!selectedSensor || !selectedImage) {
       showToast("Error", "Please select a sensor and an image first", "destructive")
@@ -267,12 +385,14 @@ export default function PredictionPage() {
       if (modelLoaded && model) {
         console.log("Using local model for prediction")
         predictedClass = await predictWithLocalModel()
-      } else {
+      } else if (apiConnected) {
         console.log("Using API for prediction")
-        // Fallback to API prediction
         const base64Image = selectedImage.startsWith('data:') 
           ? selectedImage.split(',')[1] 
           : selectedImage
+
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 20000)
 
         const response = await fetch('https://monitor-plant.loca.lt/predict', {
           method: 'POST',
@@ -282,8 +402,11 @@ export default function PredictionPage() {
           },
           body: JSON.stringify({
             image: base64Image
-          })
+          }),
+          signal: controller.signal
         })
+
+        clearTimeout(timeoutId)
 
         if (!response.ok) {
           throw new Error('Prediction failed')
@@ -291,15 +414,28 @@ export default function PredictionPage() {
 
         const result = await response.json()
         predictedClass = result.prediction || result.class || result
+      } else {
+        // Fallback to mock prediction
+        console.log("Using mock prediction for demo")
+        await new Promise(resolve => setTimeout(resolve, 2000)) // Simulate processing time
+        predictedClass = getMockPrediction()
       }
       
       setPrediction(predictedClass)
       generateAdvice(predictedClass)
 
-      showToast("Success", `Plant health analysis completed using ${modelLoaded ? 'local model' : 'API'}`)
+      const method = modelLoaded ? 'local model' : apiConnected ? 'API' : 'demo mode'
+      showToast("Success", `Plant health analysis completed using ${method}`)
     } catch (error) {
       console.error("Prediction error:", error)
-      showToast("Error", "Failed to analyze plant health", "destructive")
+      
+      // Fallback to mock prediction on error
+      console.log("Falling back to mock prediction")
+      const mockPrediction = getMockPrediction()
+      setPrediction(mockPrediction)
+      generateAdvice(mockPrediction)
+      
+      showToast("Warning", "Using demo prediction - check connection for real analysis", "destructive")
     } finally {
       setIsPredicting(false)
     }
@@ -346,20 +482,39 @@ export default function PredictionPage() {
     setNeedsIrrigation(irrigation)
   }
 
-  // Handle irrigation (turn motor on)
+  // Handle irrigation
   const handleIrrigation = async () => {
+    if (!apiConnected) {
+      showToast("Demo Mode", "Irrigation simulation - in demo mode", "default")
+      return
+    }
+    
     await controlMotor('on')
     showToast("Irrigation Started", `Remote irrigation initiated for Sensor ${selectedSensor}`)
   }
 
   return (
     <section className="space-y-6 py-4">
+      {/* Connection Status */}
+      {!apiConnected && (
+        <Card className="bg-yellow-50 dark:bg-yellow-950/20 border-yellow-200 dark:border-yellow-800">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-yellow-800 dark:text-yellow-200">
+              <AlertCircle className="h-5 w-5" />
+              <span className="font-medium">Demo Mode Active</span>
+              <span className="text-sm">- Raspberry Pi connection unavailable</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Motor Control Card */}
       <Card className="bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-800">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Droplets className="h-5 w-5 text-blue-600" />
             Irrigation System Control
+            {!apiConnected && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">DEMO</span>}
           </CardTitle>
           <CardDescription>Monitor and control the irrigation motor</CardDescription>
         </CardHeader>
@@ -432,7 +587,7 @@ export default function PredictionPage() {
         </CardContent>
       </Card>
 
-      {/* Existing Plant Health Analysis Card */}
+      {/* Plant Health Analysis Card */}
       <Card>
         <CardHeader>
           <CardDescription>Select a sensor, view camera images, and analyze plant health</CardDescription>
@@ -508,7 +663,7 @@ export default function PredictionPage() {
                   Analyzing Plant Health...
                 </>
               ) : (
-                `Analyze Plant Health ${modelLoaded ? '(Local Model)' : '(API)'}`
+                `Analyze Plant Health ${modelLoaded ? '(Local Model)' : apiConnected ? '(API)' : '(Demo)'}`
               )}
             </Button>
           )}
@@ -525,7 +680,7 @@ export default function PredictionPage() {
                   {prediction.replace(/_/g, " ")}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
-                  Predicted using: {modelLoaded ? 'Local Model' : 'API'}
+                  Predicted using: {modelLoaded ? 'Local Model' : apiConnected ? 'API' : 'Demo Mode'}
                 </p>
               </div>
             </div>
@@ -552,7 +707,7 @@ export default function PredictionPage() {
                 ) : (
                   <Droplets className="mr-2 h-4 w-4" />
                 )}
-                Start Remote Irrigation
+                {apiConnected ? 'Start Remote Irrigation' : 'Simulate Irrigation (Demo)'}
               </Button>
             )}
           </CardFooter>
