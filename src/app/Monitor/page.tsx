@@ -45,7 +45,7 @@ const MOCK_MOTOR_STATUS: MotorStatus = {
   motor_status: "OFF"
 }
 
-// Mock images for demo purposes
+// Mock images for demo purposes and initial active mode
 const MOCK_IMAGES = [
   "https://imgur.com/Ytmm66M.png",
   "https://imgur.com/dDChdK6.png",
@@ -108,11 +108,16 @@ export default function PredictionPage() {
       const connected = await testApiConnection()
       setApiConnected(connected)
       
+      // Always set initial mock images regardless of connection status
+      setCameraImages(MOCK_IMAGES)
+      
       if (!connected) {
         // Set mock data for demo mode
         setMotorStatus(MOCK_MOTOR_STATUS)
-        setCameraImages(MOCK_IMAGES)
-        showToast("Demo Mode", "API not available - using demo data")
+        showToast("Demo Mode", "API not available - using demo data with local model")
+      } else {
+        // Active mode - API connected
+        showToast("Active Mode", "API connected - using local model for predictions")
       }
 
       // Try to load model
@@ -125,7 +130,7 @@ export default function PredictionPage() {
         console.log("Model loaded:", loadedModel)
       } catch (error) {
         console.error("Error loading model:", error)
-        console.log("Model not found, will use mock predictions or API fallback")
+        showToast("Warning", "Local model not found - will use mock predictions", "destructive")
       }
       
       // Load initial motor status if API is connected
@@ -134,6 +139,8 @@ export default function PredictionPage() {
         // Set up interval to check motor status every 30 seconds
         const statusInterval = setInterval(fetchMotorStatus, 30000)
         return () => clearInterval(statusInterval)
+      } else {
+        setMotorStatus(MOCK_MOTOR_STATUS)
       }
     }
 
@@ -236,11 +243,6 @@ export default function PredictionPage() {
     setSelectedImage("")
     setPrediction(null)
     setAdvice(null)
-    
-    // Load demo images if API not connected
-    if (!apiConnected && cameraImages.length === 0) {
-      setCameraImages(MOCK_IMAGES)
-    }
   }
 
   const fetchCameraImage = async () => {
@@ -303,7 +305,7 @@ export default function PredictionPage() {
     } catch (error) {
       console.error("Failed to fetch camera image:", error)
       setApiConnected(false)
-      showToast("Error", "Failed to fetch camera image - using demo mode", "destructive")
+      showToast("Error", "Failed to fetch camera image - switching to demo mode", "destructive")
       
       // Fallback to mock image
       const mockImage = MOCK_IMAGES[Math.floor(Math.random() * MOCK_IMAGES.length)]
@@ -367,7 +369,7 @@ export default function PredictionPage() {
     })
   }
 
-  // Predict plant health with comprehensive error handling
+  // Predict plant health - now prioritizes local model over API
   const predictPlantHealth = async () => {
     if (!selectedSensor || !selectedImage) {
       showToast("Error", "Please select a sensor and an image first", "destructive")
@@ -381,42 +383,13 @@ export default function PredictionPage() {
     try {
       let predictedClass: string
 
-      // Try local model first if available
+      // Prioritize local model for both active and demo modes
       if (modelLoaded && model) {
         console.log("Using local model for prediction")
         predictedClass = await predictWithLocalModel()
-      } else if (apiConnected) {
-        console.log("Using API for prediction")
-        const base64Image = selectedImage.startsWith('data:') 
-          ? selectedImage.split(',')[1] 
-          : selectedImage
-
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 20000)
-
-        const response = await fetch('https://monitor-plant.loca.lt/predict', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            "bypass-tunnel-reminder": "true",
-          },
-          body: JSON.stringify({
-            image: base64Image
-          }),
-          signal: controller.signal
-        })
-
-        clearTimeout(timeoutId)
-
-        if (!response.ok) {
-          throw new Error('Prediction failed')
-        }
-
-        const result = await response.json()
-        predictedClass = result.prediction || result.class || result
       } else {
-        // Fallback to mock prediction
-        console.log("Using mock prediction for demo")
+        // Fallback to mock prediction if model not available
+        console.log("Local model not available, using mock prediction")
         await new Promise(resolve => setTimeout(resolve, 2000)) // Simulate processing time
         predictedClass = getMockPrediction()
       }
@@ -424,8 +397,9 @@ export default function PredictionPage() {
       setPrediction(predictedClass)
       generateAdvice(predictedClass)
 
-      const method = modelLoaded ? 'local model' : apiConnected ? 'API' : 'demo mode'
-      showToast("Success", `Plant health analysis completed using ${method}`)
+      const method = modelLoaded ? 'local model' : 'mock prediction'
+      const mode = apiConnected ? 'active' : 'demo'
+      showToast("Success", `Plant health analysis completed using ${method} (${mode} mode)`)
     } catch (error) {
       console.error("Prediction error:", error)
       
@@ -435,7 +409,7 @@ export default function PredictionPage() {
       setPrediction(mockPrediction)
       generateAdvice(mockPrediction)
       
-      showToast("Warning", "Using demo prediction - check connection for real analysis", "destructive")
+      showToast("Warning", "Using mock prediction due to model error", "destructive")
     } finally {
       setIsPredicting(false)
     }
@@ -502,7 +476,20 @@ export default function PredictionPage() {
             <div className="flex items-center gap-2 text-yellow-800 dark:text-yellow-200">
               <AlertCircle className="h-5 w-5" />
               <span className="font-medium">Demo Mode Active</span>
-              <span className="text-sm">- Raspberry Pi connection unavailable</span>
+              <span className="text-sm">- Raspberry Pi connection unavailable, using local model</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Active mode indicator */}
+      {apiConnected && (
+        <Card className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-green-800 dark:text-green-200">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="font-medium">Active Mode</span>
+              <span className="text-sm">- Raspberry Pi connected, using local model for predictions</span>
             </div>
           </CardContent>
         </Card>
@@ -590,7 +577,7 @@ export default function PredictionPage() {
       {/* Plant Health Analysis Card */}
       <Card>
         <CardHeader>
-          <CardDescription>Select a sensor, view camera images, and analyze plant health</CardDescription>
+          <CardDescription>Select a sensor, view camera images, and analyze plant health with local model</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {/* Sensor Selection */}
@@ -627,7 +614,7 @@ export default function PredictionPage() {
                       Capturing...
                     </>
                   ) : (
-                    "Capture New Image"
+                    apiConnected ? "Capture New Image" : "Generate Mock Image"
                   )}
                 </Button>
               </div>
@@ -649,7 +636,7 @@ export default function PredictionPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-sm text-gray-500">No images captured yet. Click "Capture New Image" to start.</p>
+                <p className="text-sm text-gray-500">Loading initial images...</p>
               )}
             </div>
           )}
@@ -663,7 +650,7 @@ export default function PredictionPage() {
                   Analyzing Plant Health...
                 </>
               ) : (
-                `Analyze Plant Health ${modelLoaded ? '(Local Model)' : apiConnected ? '(API)' : '(Demo)'}`
+                `Analyze Plant Health ${modelLoaded ? '(Local Model)' : '(Mock Prediction)'}`
               )}
             </Button>
           )}
@@ -680,7 +667,8 @@ export default function PredictionPage() {
                   {prediction.replace(/_/g, " ")}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
-                  Predicted using: {modelLoaded ? 'Local Model' : apiConnected ? 'API' : 'Demo Mode'}
+                  Predicted using: {modelLoaded ? 'Local Model' : 'Mock Prediction'} 
+                  {apiConnected ? ' (Active Mode)' : ' (Demo Mode)'}
                 </p>
               </div>
             </div>
